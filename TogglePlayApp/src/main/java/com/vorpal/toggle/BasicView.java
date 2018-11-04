@@ -32,7 +32,7 @@ public class BasicView extends View {
         final InputStream res = Trie.class.getResourceAsStream("/dictionary.txt");
         LinkedTrie trie = new LinkedTrie(res);
 
-        final Board board = new Board(BoardType.TORUS,
+        final Board board = new Board(BoardType.GRID,
                 DefaultDiceSets.DEFAULT_16_DICE_SET,
                 BigMath.unrankPermutationAsList(16, BigInteger.valueOf(9223372036854775807L)),
                 BigMath.unrankDiceFacesAsList(16, BigInteger.valueOf(839283)),
