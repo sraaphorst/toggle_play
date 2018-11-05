@@ -11,17 +11,21 @@ import com.vorpal.toggle.dice.Die;
 import com.vorpal.utils.Coordinates;
 import com.vorpal.utils.Dimensions;
 
-import javafx.event.EventHandler;
+import javafx.geometry.Pos;
+import javafx.scene.Node;
 import javafx.scene.control.ToggleButton;
-import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.GridPane;
+import javafx.scene.layout.Pane;
 import javafx.scene.text.Font;
 
-import java.util.List;
-import java.util.Set;
+import java.util.ArrayList;
 import java.util.Stack;
+import java.util.logging.Logger;
 
 public final class BoardWidget extends GridPane {
+    // Logging
+    private final static Logger LOG = Logger.getLogger(BoardWidget.class.getName());
+
     private final static Font DEFAULT_FONT = Font.font(70);
 
     // A subclass of a ToggleButton that holds a die.
@@ -51,33 +55,39 @@ public final class BoardWidget extends GridPane {
             // Formatting.
             setFont(DEFAULT_FONT);
 
+            // If it is not in bounds, we disable the button, wrap it in another component to receive mouse events,
+            // and then add that component to the grid.
+            final Node node;
             if (!inBounds(x, y)) {
                 setDisable(true);
-                onMouseClickedProperty().set((o) -> processButtonToggleAttempt(this));
+                final Pane p = new Pane();
+                p.getChildren().add(this);
+                node = p;
+                p.setOnMouseClicked((o) -> processButtonToggleAttempt(this));
             } else {
-                setDisable(false);
-                selectedProperty().addListener((odb, o, n) -> processButtonToggleAttempt(this));
+                node = this;
+                setOnAction(v -> processButtonToggleAttempt(this));
             }
 
             // Add it to the grid.
-            GridPane.setRowIndex(this, row);
-            GridPane.setColumnIndex(this, column);
-            BoardWidget.this.getChildren().add(this);
+            GridPane.setRowIndex(node, row);
+            GridPane.setColumnIndex(node, column);
+            BoardWidget.this.getChildren().add(node);
         }
 
         Die getDie() {
             return die;
         }
 
-        int getX() {
+        int getUnadjustedX() {
             return x;
         }
 
-        int getY() {
+        int getUnadjustedY() {
             return y;
         }
 
-        Coordinates getPosition() {
+        Coordinates getUnadjustedCoordinates() {
             return new Coordinates(x, y);
         }
 
@@ -94,17 +104,21 @@ public final class BoardWidget extends GridPane {
         }
     }
 
+    // A list of the middle DieButtons.
+    private final ArrayList<ArrayList<DieButton>> dieButtons;
+
     // A reference to the current board.
     private final Board board;
 
     // A stack of the buttons that have been clicked. The must be consecutive.
-    private final Stack<DieButton> buttonsClicked;
+    private final Stack<DieButton> dieButtonStack;
 
     BoardWidget(final Board board) {
         super();
+        setAlignment(Pos.CENTER);
 
         this.board = board;
-        buttonsClicked = new Stack<>();
+        dieButtonStack = new Stack<>();
 
         // Create the toggle buttons. We don't create a toggle group because we want the buttons to be selectable
         // without deselecting others.
@@ -143,10 +157,15 @@ public final class BoardWidget extends GridPane {
             }
         }
 
-        for (int x = 0; x < dimx; ++x)
-            for (int y = 0; y < dimy; ++y) {
-                new DieButton(x, y, x + basex, y + basey);
-            }
+        // Now we store the rest of the DieButtons, so that when an outer button is clicked, we can
+        // get the DieButton in the interior to which it is linked.
+        dieButtons = new ArrayList<>();
+        for (int x = 0; x < dimx; ++x) {
+            final ArrayList<DieButton> row = new ArrayList<>();
+            for (int y = 0; y < dimy; ++y)
+                row.add(new DieButton(x, y, x + basex, y + basey));
+            dieButtons.add(row);
+        }
     }
 
     private boolean inBounds(final int x, final int y) {
@@ -155,32 +174,42 @@ public final class BoardWidget extends GridPane {
 
     /**
      * This handles the case when a button is clicked.
-     * @param db the button
+     * Note that this could be a button outside of bounds, used to indicate adjacencies. What we actually
+     * want is the button in the interior to which is corresponds: hence, we consider this button "unadjusted"
+     * and work with its "adjusted" version.
+     * @param unadjustedDb the unadjusted button
      */
-    private void processButtonToggleAttempt(final DieButton db) {
-        System.out.println("HERE");
+    private void processButtonToggleAttempt(final DieButton unadjustedDb) {
+        LOG.info(String.format("Processing button: unadjusted=%s, adjusted=%s",
+                unadjustedDb.getUnadjustedCoordinates(),
+                unadjustedDb.getAdjustedCoordinates()));
+
+        // Get the adjusted die button, i.e. the DieButton in the interior to which this one corresponds.
+        final DieButton db = dieButtons.get(unadjustedDb.getAdjustedX()).get(unadjustedDb.getAdjustedY());
+        assert(db.getDie() == unadjustedDb.getDie());
 
         // Three cases:
-        // 1. The last button clicked was clicked: remove it.
-        if (!buttonsClicked.isEmpty() && buttonsClicked.peek().equals(db))
-            buttonsClicked.pop();
-
-        // 2. This button was formerly unclicked and is adjacent to the last button clicked: add it.
-        else if (!buttonsClicked.isEmpty() &&
-                !buttonsClicked.contains(db) &&
-                board.getAdjacencies(buttonsClicked.peek().getAdjustedCoordinates()).contains(db.getAdjustedCoordinates()))
-                buttonsClicked.push(db);
-
-        // 3. Not adjacent to the previous button clicked, or already clicked and not previous button clicked:
-        //    Start over.
+        if (!dieButtonStack.isEmpty() && dieButtonStack.peek().equals(db)) {
+            // 1. The last button clicked was clicked: remove it.
+            db.setSelected(false);
+            dieButtonStack.pop();
+        }
+        else if (!dieButtonStack.isEmpty() &&
+                !dieButtonStack.contains(db) &&
+                board.getAdjacencies(dieButtonStack.peek().getAdjustedCoordinates()).contains(db.getAdjustedCoordinates())) {
+            // 2. This button was formerly unclicked and is adjacent to the last button clicked: add it.
+            db.setSelected(true);
+            dieButtonStack.push(db);
+        }
         else {
-            while (!buttonsClicked.isEmpty()) {
-                final DieButton b = buttonsClicked.pop();
+            // 3. Not adjacent to the previous button clicked, or already clicked and not previous button clicked:
+            //    Start over.
+            while (!dieButtonStack.isEmpty()) {
+                final DieButton b = dieButtonStack.pop();
                 b.setSelected(false);
             }
             db.setSelected(true);
-            buttonsClicked.push(db);
+            dieButtonStack.push(db);
         }
-
     }
 }
